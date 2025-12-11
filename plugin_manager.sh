@@ -6,6 +6,7 @@
 
 PLUGIN_NAME="UniversalCamConfig"
 PLUGIN_VERSION="2.1"
+PLUGIN_URL="https://raw.githubusercontent.com/Ham-ahmed/Universal/main/UniversalCamConfig.tar.gz"
 
 clear
 echo ""
@@ -21,164 +22,291 @@ echo "│ Developer : H-Ahmed                                │"
 echo "└────────────────────────────────────────────────────┘"
 echo ""
 
+# === Check for root ===
+if [ "$(id -u)" != "0" ]; then
+    echo "❌ This script must be run as root. Use: sudo $0"
+    exit 1
+fi
+
+# === Check for required commands ===
+command -v wget >/dev/null 2>&1 || { echo "❌ wget is not installed. Aborting."; exit 1; }
+command -v tar >/dev/null 2>&1 || { echo "❌ tar is not installed. Aborting."; exit 1; }
+
 # === Configuration ===
 ZIP_PATH="/tmp/UniversalCamConfig.tar.gz"
 EXTRACT_BASE_DIR="/tmp"
 EXTRACT_DIR="/tmp/UniversalCamConfig"
 INSTALL_DIR="/usr/lib/enigma2/python/Plugins/Extensions"
-
-PLUGIN_URL="https://raw.githubusercontent.com/Ham-ahmed/Universal/refs/heads/main/UniversalCamConfig.tar.gz"
+BACKUP_DIR="/tmp/plugin_backup_$(date +%Y%m%d_%H%M%S)"
 
 # === Step 1: Download ===
-echo "[1/4] 📥 Downloading plugin package..."
+echo "[1/5] 📥 Downloading plugin package..."
 echo "    Source: $PLUGIN_URL"
+echo "    Destination: $ZIP_PATH"
+
 cd /tmp || { echo "❌ Cannot change directory to /tmp. Aborting."; exit 1; }
-wget -q --show-progress "$PLUGIN_URL" -O "$ZIP_PATH"
-if [ $? -ne 0 ]; then
-    echo "❌ Failed to download the plugin. Please check your connection or URL."
+
+# Backup existing plugin if exists
+if [ -d "$INSTALL_DIR/$PLUGIN_NAME" ]; then
+    echo "    ⚠️  Existing plugin found. Creating backup..."
+    mkdir -p "$BACKUP_DIR"
+    cp -r "$INSTALL_DIR/$PLUGIN_NAME" "$BACKUP_DIR/" 2>/dev/null
+    echo "    Backup created at: $BACKUP_DIR"
+fi
+
+# Download with retry logic
+for i in 1 2 3; do
+    echo "    Download attempt $i/3..."
+    wget --no-check-certificate --timeout=30 --tries=3 "$PLUGIN_URL" -O "$ZIP_PATH" 2>&1 | \
+    tail -n 1 | grep -o '[0-9]\+%' | while read percent; do
+        echo -ne "    Progress: $percent\r"
+    done
+    
+    if [ $? -eq 0 ] && [ -f "$ZIP_PATH" ] && [ $(stat -c%s "$ZIP_PATH" 2>/dev/null || echo 0) -gt 1000 ]; then
+        echo "    ✅ Download completed successfully."
+        break
+    else
+        echo "    ❌ Download attempt $i failed."
+        rm -f "$ZIP_PATH" 2>/dev/null
+        if [ $i -eq 3 ]; then
+            echo "❌ All download attempts failed. Please check your internet connection."
+            exit 1
+        fi
+        sleep 2
+    fi
+done
+
+# Verify download
+if [ ! -f "$ZIP_PATH" ] || [ $(stat -c%s "$ZIP_PATH" 2>/dev/null || echo 0) -lt 1000 ]; then
+    echo "❌ Downloaded file is too small or missing. Please check the URL."
     exit 1
 fi
 
-# === Step 2: Extract & Install ===
-echo "[2/4] 📦 Extracting files and installing..."
-
-# تنظيف مجلد الاستخراج القديم إن وجد
+# === Step 2: Extract ===
+echo "[2/5] 📦 Extracting files..."
 rm -rf "$EXTRACT_DIR" 2>/dev/null
 
-# استخراج الملفات
-tar -xzf "$ZIP_PATH" -C "$EXTRACT_BASE_DIR" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "❌ Extraction failed. The file may be corrupted."
+if ! tar -tzf "$ZIP_PATH" >/dev/null 2>&1; then
+    echo "❌ Archive is corrupted or invalid."
     exit 1
 fi
 
-# التحقق من وجود المجلد المستخرج
+tar -xzf "$ZIP_PATH" -C "$EXTRACT_BASE_DIR" 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Extraction failed. The archive may be corrupted."
+    exit 1
+fi
+
+# Find extracted directory
 if [ ! -d "$EXTRACT_DIR" ]; then
-    # محاولة البحث عن المجلد المستخرج
-    EXTRACT_DIR=$(find "$EXTRACT_BASE_DIR" -name "*UniversalCamConfig*" -type d | head -1)
+    EXTRACT_DIR=$(find "$EXTRACT_BASE_DIR" -maxdepth 2 -type d -name "*$PLUGIN_NAME*" -o -name "*Cam*" -o -name "*Config*" | head -1)
     if [ -z "$EXTRACT_DIR" ]; then
-        echo "❌ Plugin directory not found in archive. Trying alternative method..."
-        # إنشاء دليل استخراج جديد ومحاولة استخراج مباشرة
-        mkdir -p "/tmp/plugin_extract"
-        tar -xzf "$ZIP_PATH" -C "/tmp/plugin_extract" 2>/dev/null
-        EXTRACT_DIR=$(find "/tmp/plugin_extract" -name "*UniversalCamConfig*" -type d | head -1)
-        if [ -z "$EXTRACT_DIR" ]; then
-            echo "❌ Cannot find plugin directory in archive."
+        # Try to extract again to specific directory
+        EXTRACT_DIR="/tmp/${PLUGIN_NAME}_extract"
+        rm -rf "$EXTRACT_DIR" 2>/dev/null
+        mkdir -p "$EXTRACT_DIR"
+        tar -xzf "$ZIP_PATH" -C "$EXTRACT_DIR" 2>&1
+        if [ ! -d "$EXTRACT_DIR" ] || [ -z "$(ls -A "$EXTRACT_DIR" 2>/dev/null)" ]; then
+            echo "❌ Cannot find plugin files in archive."
             exit 1
         fi
     fi
 fi
 
-echo "    Found plugin directory: $EXTRACT_DIR"
+echo "    Extracted to: $EXTRACT_DIR"
 
-# التحقق من هيكل الملفات داخل المجلد
+# === Step 3: Locate plugin files ===
+echo "[3/5] 🔍 Locating plugin files..."
 PLUGIN_CONTENT_DIR=""
-if [ -d "$EXTRACT_DIR/$PLUGIN_NAME" ]; then
-    PLUGIN_CONTENT_DIR="$EXTRACT_DIR/$PLUGIN_NAME"
-elif [ -d "$EXTRACT_DIR/usr/lib/enigma2/python/Plugins/Extensions/$PLUGIN_NAME" ]; then
-    PLUGIN_CONTENT_DIR="$EXTRACT_DIR/usr/lib/enigma2/python/Plugins/Extensions/$PLUGIN_NAME"
-else
-    # البحث عن أي دليل باسم المكون الإضافي
-    PLUGIN_CONTENT_DIR=$(find "$EXTRACT_DIR" -type d -name "$PLUGIN_NAME" | head -1)
-    if [ -z "$PLUGIN_CONTENT_DIR" ]; then
-        # إذا لم نجد، نفترض أن EXTRACT_DIR نفسه هو محتوى المكون الإضافي
-        PLUGIN_CONTENT_DIR="$EXTRACT_DIR"
+
+# Common directory structures
+possible_paths=(
+    "$EXTRACT_DIR/$PLUGIN_NAME"
+    "$EXTRACT_DIR/usr/lib/enigma2/python/Plugins/Extensions/$PLUGIN_NAME"
+    "$EXTRACT_DIR/Extensions/$PLUGIN_NAME"
+    "$EXTRACT_DIR"
+)
+
+for path in "${possible_paths[@]}"; do
+    if [ -d "$path" ] && [ -f "$path/__init__.py" ] || [ -f "$path/plugin.py" ]; then
+        PLUGIN_CONTENT_DIR="$path"
+        break
     fi
+done
+
+if [ -z "$PLUGIN_CONTENT_DIR" ]; then
+    # Search recursively
+    PLUGIN_CONTENT_DIR=$(find "$EXTRACT_DIR" -type f \( -name "plugin.py" -o -name "__init__.py" \) -exec dirname {} \; | head -1)
 fi
 
-echo "    Plugin content directory: $PLUGIN_CONTENT_DIR"
+if [ -z "$PLUGIN_CONTENT_DIR" ]; then
+    echo "❌ Cannot locate plugin files in the extracted archive."
+    echo "    Archive structure:"
+    find "$EXTRACT_DIR" -type f | head -20
+    exit 1
+fi
 
-# إنشاء مجلد التثبيت إذا لم يكن موجوداً
+echo "    Plugin files found at: $PLUGIN_CONTENT_DIR"
+
+# === Step 4: Install ===
+echo "[4/5] ⚙️ Installing plugin..."
+
+# Create installation directory
 mkdir -p "$INSTALL_DIR"
 
-# حذف التثبيت القديم إن وجد
-rm -rf "$INSTALL_DIR/$PLUGIN_NAME"
+# Remove old installation
+rm -rf "$INSTALL_DIR/$PLUGIN_NAME" 2>/dev/null
 
-# نسخ الملفات مع التحقق
-echo "    Copying files to: $INSTALL_DIR/$PLUGIN_NAME"
-cp -r "$PLUGIN_CONTENT_DIR" "$INSTALL_DIR/" || {
-    echo "❌ Failed to copy plugin to Enigma2 plugins directory."
-    echo "    Source: $PLUGIN_CONTENT_DIR"
-    echo "    Destination: $INSTALL_DIR"
+# Copy files
+echo "    Copying to: $INSTALL_DIR/$PLUGIN_NAME"
+if cp -r "$PLUGIN_CONTENT_DIR" "$INSTALL_DIR/$PLUGIN_NAME" 2>&1; then
+    echo "    ✅ Files copied successfully."
+else
+    echo "    ⚠️  cp command failed, trying alternative method..."
     
-    # محاولة بديلة باستخدام rsync إذا كان متوفراً
-    if command -v rsync >/dev/null 2>&1; then
-        echo "    Trying with rsync..."
-        rsync -av "$PLUGIN_CONTENT_DIR/" "$INSTALL_DIR/$PLUGIN_NAME/" || {
-            echo "❌ rsync also failed."
-            exit 1
-        }
-    else
-        exit 1
-    fi
-}
-
-# التأكد من أن الملفات قد نسخت بنجاح
-if [ ! -d "$INSTALL_DIR/$PLUGIN_NAME" ]; then
-    echo "❌ Plugin was not copied successfully. Checking for alternative names..."
-    # البحث عن أي دليل تم نسخه حديثاً
-    NEW_PLUGIN_DIR=$(find "$INSTALL_DIR" -type d -name "*Universal*" -o -name "*Cam*" -o -name "*Config*" | head -1)
-    if [ -n "$NEW_PLUGIN_DIR" ]; then
-        echo "    Found alternative directory: $NEW_PLUGIN_DIR"
-        echo "    Renaming to proper name..."
-        mv "$NEW_PLUGIN_DIR" "$INSTALL_DIR/$PLUGIN_NAME"
-    else
-        echo "❌ No plugin files found in destination directory."
+    # Try with find and cpio
+    (cd "$PLUGIN_CONTENT_DIR" && find . -type f -print | cpio -pdum "$INSTALL_DIR/$PLUGIN_NAME" 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ ! -d "$INSTALL_DIR/$PLUGIN_NAME" ]; then
+        echo "❌ Failed to copy plugin files."
         exit 1
     fi
 fi
 
-# === Step 3: Set Permissions ===
-echo "[3/4] 🔧 Setting permissions..."
-chmod -R 755 "$INSTALL_DIR/$PLUGIN_NAME"
-chown -R root:root "$INSTALL_DIR/$PLUGIN_NAME" 2>/dev/null
+# Verify installation
+if [ ! -d "$INSTALL_DIR/$PLUGIN_NAME" ]; then
+    echo "❌ Installation failed. Plugin directory not created."
+    exit 1
+fi
 
-# === Step 4: Cleanup ===
-echo "[4/4] 🧹 Cleaning up..."
+# === Step 5: Set permissions and cleanup ===
+echo "[5/5] 🔧 Setting permissions and cleaning up..."
+
+# Set permissions
+chmod -R 755 "$INSTALL_DIR/$PLUGIN_NAME"
+find "$INSTALL_DIR/$PLUGIN_NAME" -type f -name "*.py" -exec chmod 644 {} \; 2>/dev/null
+find "$INSTALL_DIR/$PLUGIN_NAME" -type f -name "*.pyo" -exec chmod 644 {} \; 2>/dev/null
+find "$INSTALL_DIR/$PLUGIN_NAME" -type f -name "*.so" -exec chmod 755 {} \; 2>/dev/null
+
+# Set ownership (if not already root)
+if [ "$(id -u)" -eq 0 ]; then
+    chown -R root:root "$INSTALL_DIR/$PLUGIN_NAME" 2>/dev/null
+fi
+
+# Cleanup
 rm -rf "$EXTRACT_DIR" 2>/dev/null
-rm -rf "/tmp/plugin_extract" 2>/dev/null
 rm -f "$ZIP_PATH" 2>/dev/null
 
-# === Final Message ===
+echo "    ✅ Permissions set."
+echo "    ✅ Temporary files cleaned."
+
+# === Installation Complete ===
 echo ""
-echo "✅ Installation complete!"
-echo ""
-echo "The plugin \"Universal Cam Config\" (v$PLUGIN_VERSION) has been installed successfully."
-echo "Location: $INSTALL_DIR/$PLUGIN_NAME"
-echo "Files installed:"
-find "$INSTALL_DIR/$PLUGIN_NAME" -type f | wc -l | xargs echo "    Total files:"
+echo "┌────────────────────────────────────────────────────┐"
+echo "│            ✅ INSTALLATION COMPLETE ✅             │"
+echo "├────────────────────────────────────────────────────┤"
+echo "│ Plugin: Universal Cam Config                       │"
+echo "│ Version: $PLUGIN_VERSION                                   │"
+echo "│ Location: $INSTALL_DIR/$PLUGIN_NAME │"
+echo "│ Files installed: $(find "$INSTALL_DIR/$PLUGIN_NAME" -type f 2>/dev/null | wc -l)                          │"
+echo "└────────────────────────────────────────────────────┘"
 echo ""
 
-# === Restart info ===
+# === Restart Options ===
 echo "#########################################################"
-echo "#           Your Device will RESTART Now                #"
+echo "#         Plugin installation requires restart         #"
 echo "#########################################################"
 echo ""
-read -p "Do you want to restart Enigma2 now? (y/n): " -t 10 -n 1 RESTART
+echo "Select an option:"
+echo "1) Restart Enigma2 now"
+echo "2) Restart Enigma2 later"
+echo "3) Test plugin without restart (experimental)"
 echo ""
+read -p "Enter choice [1-3] (default: 1): " -t 30 choice
 
-if [ "$RESTART" = "y" ] || [ "$RESTART" = "Y" ]; then
-    echo "Restarting Enigma2 in 3 seconds..."
-    sleep 3
+case "${choice:-1}" in
+    1)
+        echo ""
+        echo "🔄 Restarting Enigma2 in 3 seconds..."
+        sleep 3
+        
+        # Try different restart methods
+        if [ -f /etc/init.d/enigma2 ]; then
+            /etc/init.d/enigma2 restart
+        elif [ -f /etc/init.d/rcS ]; then
+            killall -9 enigma2 2>/dev/null
+            sleep 2
+            /usr/bin/enigma2.sh >/dev/null 2>&1 &
+        elif command -v systemctl >/dev/null 2>&1; then
+            systemctl restart enigma2 2>/dev/null || {
+                killall -9 enigma2 2>/dev/null
+                sleep 2
+                /usr/bin/enigma2.sh >/dev/null 2>&1 &
+            }
+        else
+            killall -9 enigma2 2>/dev/null
+            sleep 2
+            /usr/bin/enigma2.sh >/dev/null 2>&1 &
+        fi
+        
+        echo "Enigma2 is restarting..."
+        ;;
     
-    # محاولة إعادة التشغيل بطريقة أنظف
-    if [ -f /etc/init.d/enigma2 ]; then
-        /etc/init.d/enigma2 restart
-    elif [ -f /etc/init.d/rcS ]; then
-        killall -9 enigma2
-        sleep 2
-        /usr/bin/enigma2.sh &
-    else
-        killall -9 enigma2
-        sleep 2
-        systemctl restart enigma2 2>/dev/null || /usr/bin/enigma2.sh &
-    fi
-else
+    2)
+        echo ""
+        echo "⚠️  Please restart Enigma2 manually to use the plugin."
+        echo ""
+        echo "Manual restart methods:"
+        echo "  - Via receiver menu: Menu → Standby/Restart → Restart"
+        echo "  - Via telnet: init 4 && sleep 2 && init 3"
+        echo "  - Via command: killall -9 enigma2 && sleep 2 && /usr/bin/enigma2.sh &"
+        ;;
+    
+    3)
+        echo ""
+        echo "⚠️  Experimental: Trying to reload plugins without restart..."
+        echo "    This may not work on all receivers."
+        
+        # Try to reload plugins
+        if [ -f /usr/lib/enigma2/python/Components/PluginComponent.py ]; then
+            echo "    Attempting plugin reload..."
+            python3 -c "
+import sys
+sys.path.append('/usr/lib/enigma2/python')
+try:
+    from Plugins.Plugin import PluginDescriptor
+    from Components.PluginComponent import plugins
+    plugins.clear()
+    plugins.readPluginList('/etc/enigma2/plugins')
+    print('    Plugin list reloaded. You may need to restart GUI.')
+except Exception as e:
+    print('    Error:', str(e))
+    print('    Full restart is recommended.')
+" 2>/dev/null || echo "    Plugin reload failed. Full restart required."
+        else
+            echo "    Cannot reload plugins automatically."
+        fi
+        
+        echo ""
+        echo "⚠️  For full functionality, please restart Enigma2."
+        ;;
+    
+    *)
+        echo "Invalid choice. No restart initiated."
+        ;;
+esac
+
+echo ""
+echo "#########################################################"
+echo "#           Installation process completed!            #"
+echo "#########################################################"
+
+if [ -d "$BACKUP_DIR" ]; then
     echo ""
-    echo "⚠️  Please restart Enigma2 manually to use the plugin."
-    echo "   You can restart from the device menu or using:"
-    echo "   killall -9 enigma2 && sleep 2 && /usr/bin/enigma2.sh &"
-    echo ""
+    echo "📦 Backup of previous version saved at:"
+    echo "   $BACKUP_DIR"
+    echo "   To restore: cp -r \"$BACKUP_DIR/$PLUGIN_NAME\" \"$INSTALL_DIR/\""
 fi
 
+echo ""
 exit 0
