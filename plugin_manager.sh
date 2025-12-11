@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# سكريبت لإدارة تنزيل وتحديث البلجنات بصيغة tar.gz
-# إعداد: [اسمك]
-# تاريخ: $(date +%Y-%m-%d)
-
-# الألوان للواجهة
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -59,7 +54,6 @@ check_dependencies() {
     fi
 }
 
-# عرض القائمة الرئيسية
 show_menu() {
     clear
     echo -e "${GREEN}════════════════════════════════════════${NC}"
@@ -80,7 +74,7 @@ show_menu() {
 download_new_plugin() {
     echo -e "${GREEN}── تنزيل بلجن جديد ──${NC}"
     
-    read -p "أدخل رابط تنزيل البلجن: " plugin_url
+    read -p "https://raw.githubusercontent.com/Ham-ahmed/Universal/refs/heads/main/UniversalCamConfig.tar.gz"
     if [ -z "$plugin_url" ]; then
         echo -e "${RED}خطأ: الرابط فارغ${NC}"
         return 1
