@@ -10,3 +10,4 @@
 etc/tuxbox/config
 
 5️⃣ You can change your subscription after saving as you wish.
+![Uploading IMG_٢٠٢٥١٢١٢_١٤٢١٢٩.jpg…]()
